@@ -54,39 +54,42 @@ base64_noline() {
     base64 | tr -d '\n'
 }
 
-# ターミナルのサイズ（文字数・ピクセル数）と PNG の寸法を取得して
-# 画面中央に収まる c= r= とオフセットを計算する
+# ターミナルサイズ・セルピクセルサイズ・PNG 寸法からレイアウトを計算する。
+# 出力: tc tr_est col_offset row_offset
 calc_layout() {
     local png_file=$1
-    python3 - "$png_file" "$zoom_percent" <<'EOF'
+    python3 - "$png_file" "$zoom_percent" <<'PYEOF'
 import fcntl, termios, struct, sys
 
-png_file  = sys.argv[1]
-zoom      = int(sys.argv[2]) / 100.0
+png_file = sys.argv[1]
+zoom     = int(sys.argv[2]) / 100.0
 
-# ── ターミナルサイズ取得 ──────────────────────────────────────────
+# ── ターミナルサイズ取得 (文字数 + ピクセル数) ─────────────────────
 try:
-    buf = fcntl.ioctl(1, termios.TIOCGWINSZ, b'\x00' * 8)
-    t_rows, t_cols, px_w, px_h = struct.unpack('HHHH', buf)
+    raw = fcntl.ioctl(1, termios.TIOCGWINSZ, b'\x00' * 8)
+    t_rows, t_cols, px_w, px_h = struct.unpack('HHHH', raw)
+    if not (t_rows and t_cols and px_w and px_h):
+        raise ValueError("no pixel info")
+    cell_pw = px_w / t_cols
+    cell_ph = px_h / t_rows
 except Exception:
-    t_rows, t_cols, px_w, px_h = 40, 120, 0, 0
+    try:
+        raw4 = fcntl.ioctl(1, termios.TIOCGWINSZ, b'\x00' * 4)
+        t_rows, t_cols = struct.unpack('HH', raw4)
+    except Exception:
+        t_rows, t_cols = 40, 120
+    t_rows = t_rows or 40
+    t_cols = t_cols or 120
+    cell_pw = 8.0
+    cell_ph = 16.0
+    px_w = t_cols * cell_pw
+    px_h = t_rows * cell_ph
 
-t_rows = t_rows or 40
-t_cols = t_cols or 120
-
-# ステータスバー 1 行分を除いた表示領域
 display_rows = max(1, t_rows - 1)
+avail_pw = px_w
+avail_ph = cell_ph * display_rows
 
-# ── セルのアスペクト比（pixel/cell）──────────────────────────────
-if px_w > 0 and px_h > 0:
-    cell_w = px_w / t_cols      # 横方向: pixel / cell
-    cell_h = px_h / t_rows      # 縦方向: pixel / cell
-else:
-    # フォールバック: 一般的な端末の比率 (2:1 高さ:幅)
-    cell_w = 1.0
-    cell_h = 2.0
-
-# ── PNG の画像サイズ取得 ─────────────────────────────────────────
+# ── PNG 寸法取得 ────────────────────────────────────────────────────
 try:
     with open(png_file, 'rb') as f:
         f.read(8); f.read(4); f.read(4)
@@ -95,72 +98,58 @@ except Exception:
     img_w, img_h = 0, 0
 
 if img_w <= 0 or img_h <= 0:
-    # 寸法不明時はシンプルにフォールバック
-    tc = max(1, int(t_cols * zoom))
-    tr = display_rows
-    co = (t_cols - tc) // 2 + 1
-    ro = (display_rows - tr) // 2 + 1
-    print(tc, tr, max(1, co), max(1, ro))
+    print(max(1, t_cols), display_rows, 1, 1)
     sys.exit(0)
 
-# ── 画像をセル座標に変換したアスペクト比 ─────────────────────────
-# 画像を cell_w × cell_h のグリッドに置くとき
-# cols_needed = img_w / cell_w
-# rows_needed = img_h / cell_h
-# アスペクト比 (cols per row) = (img_w / cell_w) / (img_h / cell_h)
-aspect = (img_w / cell_w) / (img_h / cell_h)   # cols / rows
+# ── スケール計算 ────────────────────────────────────────────────────
+# zoom=100% の基準: 幅いっぱい (ポートレート PDF でも端末幅を最大活用)
+base_scale = avail_pw / img_w
+scale      = base_scale * zoom
 
-# ── ズーム後の最大サイズ ─────────────────────────────────────────
-max_cols = t_cols * zoom
-max_rows = display_rows * zoom
+# ズームアウトして画面内に収まる場合 → 上下左右均等に余白を取る
+fit_scale = min(avail_pw / img_w, avail_ph / img_h)
+if scale < fit_scale:
+    scale = fit_scale * zoom
 
-# アスペクト比を保ちつつ最大サイズに収める
-if max_cols / aspect <= max_rows:
-    tc = max_cols
-    tr = tc / aspect
+tpw = img_w * scale
+tph = img_h * scale
+
+# ── セル単位に変換 ──────────────────────────────────────────────────
+tc     = max(1, round(tpw / cell_pw))   # Kitty c= に渡す列数
+tr_est = max(1, round(tph / cell_ph))   # 垂直センタリング用の推定行数
+
+# ── センタリングオフセット (1-based) ───────────────────────────────
+col_offset = max(1, (t_cols - tc) // 2 + 1)
+
+if tr_est <= display_rows:
+    row_offset = max(1, (display_rows - tr_est) // 2 + 1)
 else:
-    tr = max_rows
-    tc = tr * aspect
+    row_offset = 1
 
-tc = max(1, round(tc))
-tr = max(1, round(tr))
-
-# ── 画面中央へのオフセット（1-based）────────────────────────────
-col_offset = (t_cols - tc) // 2 + 1
-row_offset  = (display_rows - tr) // 2 + 1
-
-col_offset = max(1, col_offset)
-row_offset  = max(1, row_offset)
-
-print(tc, tr, col_offset, row_offset)
-EOF
+print(tc, tr_est, col_offset, row_offset)
+PYEOF
 }
 
 render_page() {
     local page=$1
-    local png_file
-    local encoded_path
-    local tc tr co ro
-    local rows cols
+    local png_file tc tr_est co ro
+    local rows encoded_path
 
     png_file=$(render_page_png "$page")
-
-    # レイアウト計算
-    read -r tc tr co ro < <(calc_layout "$png_file")
+    read -r tc tr_est co ro < <(calc_layout "$png_file")
 
     rows=$(tput lines 2>/dev/null || printf '40')
-    cols=$(tput cols 2>/dev/null || printf '120')
 
     encoded_path=$(printf '%s' "$png_file" | base64_noline)
 
-    # 画面クリア → 既存画像削除 → 中央にカーソル移動 → 描画
+    # 画面クリア → 既存画像削除 → センタリング位置へ移動 → 描画
+    # r= は指定しない: Kitty が自然なアスペクト比で高さを決定する
     printf '\033[2J\033[H'
     printf '\033_Ga=d,d=A,q=2\033\\'
     printf '\033[%s;%sH' "$ro" "$co"
-    printf '\033_Ga=T,t=f,f=100,q=2,C=1,c=%s,r=%s;%s\033\\' \
-        "$tc" "$tr" "$encoded_path"
+    printf '\033_Ga=T,t=f,f=100,q=2,C=1,c=%s;%s\033\\' \
+        "$tc" "$encoded_path"
 
-    # ステータスバー（最終行）
     printf '\033[%s;1H' "$rows"
     printf '\033[2K'
     printf 'Page %s/%s  zoom %s%%  [n]ext [p]rev [z]oom-in [x]zoom-out [g]jump [r]erender [q]uit' \
@@ -172,8 +161,7 @@ rerender_current_page() {
     render_page "$current_page"
 }
 jump_to_page() {
-    local input
-    local rows
+    local input rows
     rows=$(tput lines 2>/dev/null || printf '40')
     printf '\033[%s;1H' "$rows"
     printf '\033[2K'
@@ -215,7 +203,7 @@ while true; do
         render_page "$current_page"
         ;;
     x)
-        if ((zoom_percent > 20)); then
+        if ((zoom_percent > 10)); then
             ((zoom_percent -= 10))
         fi
         render_page "$current_page"
