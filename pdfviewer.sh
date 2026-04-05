@@ -107,12 +107,12 @@ term_height_px = max(1, int(sys.argv[6]))
 cell_width = term_width_px / term_cols
 cell_height = term_height_px / term_rows
 
-scale = min(term_width_px / image_width, term_height_px / image_height)
+scale = term_width_px / image_width
 target_width_px = max(1, int(image_width * scale))
 target_height_px = max(1, int(image_height * scale))
 
 target_cols = max(1, min(term_cols, math.ceil(target_width_px / cell_width)))
-target_rows = max(1, min(term_rows, math.ceil(target_height_px / cell_height)))
+target_rows = max(1, math.ceil(target_height_px / cell_height))
 
 print(f"{target_cols} {target_rows}")
 PY
@@ -176,7 +176,7 @@ render_page() {
   read -r image_width image_height < <(get_image_size "$png_file")
   read -r target_cols target_rows < <(fit_to_terminal "$image_width" "$image_height" "$cols" "$viewport_rows" "$term_width_px" "$(( term_height_px * viewport_rows / rows ))")
   start_col=$(( ((cols - target_cols) / 2) + 1 ))
-  start_row=$(( ((viewport_rows - target_rows) / 2) + 1 ))
+  start_row=1
   if (( start_col < 1 )); then
     start_col=1
   fi
