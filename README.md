@@ -19,7 +19,8 @@ chmod +x ./pdfviewer.sh
 
 - `n`: next page
 - `p`: previous page
+- `z`: zoom in
+- `x`: zoom out
 - `g`: jump to page
 - `r`: rerender current page
 - `q`: quit
-# pdfviewer
